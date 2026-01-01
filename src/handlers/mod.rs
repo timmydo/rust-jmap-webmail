@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 use tiny_http::{Header, Request, Response};
 use uuid::Uuid;
 
@@ -8,6 +9,7 @@ use crate::session::{
     clear_session_cookie, make_session_cookie, parse_session_cookie, Session, SessionStore,
 };
 use crate::templates;
+use crate::{log_debug, log_error, log_info};
 
 pub struct AppState {
     pub config: Config,
@@ -26,8 +28,20 @@ impl AppState {
 type BoxResponse = Response<std::io::Cursor<Vec<u8>>>;
 
 pub fn handle_request(state: &Arc<AppState>, request: Request) {
+    let start = Instant::now();
     let path = request.url().to_string();
     let method = request.method().to_string();
+    let remote_addr = request
+        .remote_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    log_info!(
+        "REQUEST {} {} from {}",
+        method,
+        path,
+        remote_addr
+    );
 
     // Extract session if present
     let session_id = request
@@ -36,10 +50,27 @@ pub fn handle_request(state: &Arc<AppState>, request: Request) {
         .find(|h| h.field.as_str().to_ascii_lowercase() == "cookie")
         .and_then(|h| parse_session_cookie(h.value.as_str()));
 
+    if let Some(ref sid) = session_id {
+        log_debug!("Session ID: {}", sid);
+    }
+
     let response = route(state, &method, &path, session_id, request);
 
-    // Ignore send errors (client may have disconnected)
-    let _ = response;
+    let elapsed = start.elapsed();
+    match response {
+        Ok(()) => log_info!(
+            "RESPONSE {} {} completed in {:?}",
+            method,
+            path,
+            elapsed
+        ),
+        Err(()) => log_error!(
+            "RESPONSE {} {} failed after {:?}",
+            method,
+            path,
+            elapsed
+        ),
+    }
 }
 
 fn route(
@@ -140,9 +171,12 @@ fn serve_404(request: Request) -> Result<(), ()> {
 }
 
 fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
+    log_debug!("Processing login request");
+
     // Parse form body
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
+        log_error!("Failed to read login request body");
         return serve_login_page(request, Some("Failed to read request"));
     }
 
@@ -167,14 +201,23 @@ fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
     let (username, password) = match (username, password) {
         (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => (u, p),
         _ => {
+            log_error!("Login attempt with missing username or password");
             let html = templates::login_page(Some("Username and password required"));
             return request.respond(html_response(html)).map_err(|_| ());
         }
     };
 
+    log_info!("Login attempt for user: {}", username);
+
     // Try to authenticate with JMAP server
     match JmapClient::discover(&state.config.jmap.well_known_url, &username, &password) {
         Ok((_session, client)) => {
+            log_info!(
+                "Login successful for user: {}, account_id: {}",
+                username,
+                client.account_id()
+            );
+
             let session = Session {
                 username: username.clone(),
                 password,
@@ -183,6 +226,7 @@ fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
             };
 
             let session_id = state.sessions.create(session);
+            log_debug!("Created session: {}", session_id);
             let cookie = make_session_cookie(&session_id);
 
             let html = templates::main_page(&username);
@@ -192,6 +236,7 @@ fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
             request.respond(response).map_err(|_| ())
         }
         Err(e) => {
+            log_error!("Login failed for user {}: {}", username, e);
             let error_msg = format!("Login failed: {}", e);
             let html = templates::login_page(Some(&error_msg));
             request.respond(html_response(html)).map_err(|_| ())
@@ -200,6 +245,7 @@ fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
 }
 
 fn handle_logout(state: &Arc<AppState>, session_id: &Uuid, request: Request) -> Result<(), ()> {
+    log_info!("User logging out, session: {}", session_id);
     state.sessions.remove(session_id);
     let cookie = clear_session_cookie();
     let html = templates::login_page(None);
@@ -219,17 +265,37 @@ fn serve_main_page(state: &Arc<AppState>, session_id: &Uuid, request: Request) -
 }
 
 fn handle_mailboxes(state: &Arc<AppState>, session_id: &Uuid, request: Request) -> Result<(), ()> {
+    log_debug!("Fetching mailboxes for session: {}", session_id);
+
     let client = match get_client(state, session_id) {
         Some(c) => c,
-        None => return redirect_to_login(request),
+        None => {
+            log_error!("No client found for session: {}", session_id);
+            return redirect_to_login(request);
+        }
     };
 
     match client.get_mailboxes() {
         Ok(mailboxes) => {
+            log_info!(
+                "Fetched {} mailboxes for session {}",
+                mailboxes.len(),
+                session_id
+            );
+            for mb in &mailboxes {
+                log_debug!(
+                    "  Mailbox: {} (id={}, total={}, unread={})",
+                    mb.name,
+                    mb.id,
+                    mb.total_emails,
+                    mb.unread_emails
+                );
+            }
             let html = templates::mailbox_list(&mailboxes);
             request.respond(html_response(html)).map_err(|_| ())
         }
         Err(e) => {
+            log_error!("Failed to fetch mailboxes: {}", e);
             let html = templates::error_fragment(&format!("Failed to load mailboxes: {}", e));
             request.respond(html_response(html)).map_err(|_| ())
         }
@@ -242,25 +308,80 @@ fn handle_emails(
     mailbox_id: &str,
     request: Request,
 ) -> Result<(), ()> {
+    let mailbox_id_decoded = urlencoding_decode(mailbox_id);
+    log_info!(
+        "Fetching emails for mailbox: {} (decoded: {})",
+        mailbox_id,
+        mailbox_id_decoded
+    );
+
     let client = match get_client(state, session_id) {
         Some(c) => c,
-        None => return redirect_to_login(request),
+        None => {
+            log_error!("No client found for session: {}", session_id);
+            return redirect_to_login(request);
+        }
     };
 
-    let mailbox_id = urlencoding_decode(mailbox_id);
+    log_debug!("Querying email IDs for mailbox: {}", mailbox_id_decoded);
 
-    match client.query_emails(&mailbox_id, 50) {
-        Ok(ids) => match client.get_emails(&ids) {
-            Ok(emails) => {
-                let html = templates::email_list(&emails);
-                request.respond(html_response(html)).map_err(|_| ())
+    match client.query_emails(&mailbox_id_decoded, 50) {
+        Ok(ids) => {
+            log_info!(
+                "Email/query returned {} email IDs for mailbox {}",
+                ids.len(),
+                mailbox_id_decoded
+            );
+
+            if ids.is_empty() {
+                log_debug!("No emails in mailbox, returning empty list");
+                let html = templates::email_list(&[]);
+                return request.respond(html_response(html)).map_err(|_| ());
             }
-            Err(e) => {
-                let html = templates::error_fragment(&format!("Failed to load emails: {}", e));
-                request.respond(html_response(html)).map_err(|_| ())
+
+            log_debug!("Email IDs returned: {:?}", ids);
+            log_debug!("Fetching email details for {} emails...", ids.len());
+
+            match client.get_emails(&ids) {
+                Ok(emails) => {
+                    log_info!(
+                        "Email/get returned {} emails (requested {})",
+                        emails.len(),
+                        ids.len()
+                    );
+
+                    if emails.len() != ids.len() {
+                        log_error!(
+                            "MISMATCH: Requested {} email IDs but got {} emails back!",
+                            ids.len(),
+                            emails.len()
+                        );
+                        log_debug!("Requested IDs: {:?}", ids);
+                        let returned_ids: Vec<_> = emails.iter().map(|e| &e.id).collect();
+                        log_debug!("Returned IDs: {:?}", returned_ids);
+
+                        // Find missing IDs
+                        let returned_set: std::collections::HashSet<_> =
+                            emails.iter().map(|e| e.id.as_str()).collect();
+                        let missing: Vec<_> = ids
+                            .iter()
+                            .filter(|id| !returned_set.contains(id.as_str()))
+                            .collect();
+                        log_error!("Missing email IDs: {:?}", missing);
+                    }
+
+                    let html = templates::email_list(&emails);
+                    request.respond(html_response(html)).map_err(|_| ())
+                }
+                Err(e) => {
+                    log_error!("Failed to fetch email details: {}", e);
+                    let html = templates::error_fragment(&format!("Failed to load emails: {}", e));
+                    request.respond(html_response(html)).map_err(|_| ())
+                }
             }
-        },
+        }
         Err(e) => {
+            log_error!("Failed to query emails for mailbox {}: {}", mailbox_id_decoded, e);
             let html = templates::error_fragment(&format!("Failed to query emails: {}", e));
             request.respond(html_response(html)).map_err(|_| ())
         }
@@ -273,23 +394,38 @@ fn handle_email(
     email_id: &str,
     request: Request,
 ) -> Result<(), ()> {
+    let email_id_decoded = urlencoding_decode(email_id);
+    log_info!(
+        "Fetching single email: {} (decoded: {})",
+        email_id,
+        email_id_decoded
+    );
+
     let client = match get_client(state, session_id) {
         Some(c) => c,
-        None => return redirect_to_login(request),
+        None => {
+            log_error!("No client found for session: {}", session_id);
+            return redirect_to_login(request);
+        }
     };
 
-    let email_id = urlencoding_decode(email_id);
-
-    match client.get_email(&email_id) {
+    match client.get_email(&email_id_decoded) {
         Ok(Some(email)) => {
+            log_info!(
+                "Fetched email {} - \"{}\"",
+                email.id,
+                email.subject.as_deref().unwrap_or("(no subject)")
+            );
             let html = templates::email_view(&email);
             request.respond(html_response(html)).map_err(|_| ())
         }
         Ok(None) => {
+            log_error!("Email not found: {}", email_id_decoded);
             let html = templates::error_fragment("Email not found");
             request.respond(html_response(html)).map_err(|_| ())
         }
         Err(e) => {
+            log_error!("Failed to fetch email {}: {}", email_id_decoded, e);
             let html = templates::error_fragment(&format!("Failed to load email: {}", e));
             request.respond(html_response(html)).map_err(|_| ())
         }
