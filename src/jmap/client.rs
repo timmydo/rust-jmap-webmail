@@ -34,37 +34,128 @@ impl JmapClient {
         format!("Basic {}", encoded)
     }
 
-    fn resolve_session_url(well_known_url: &str) -> Result<String, JmapError> {
-        // Follow redirects manually to get the final session URL
-        // We do this without auth first, then authenticate to the final URL
+    /// Resolve a URL, following redirects manually while preserving the auth header.
+    /// Returns the final URL and the response body.
+    fn fetch_with_auth_following_redirects(
+        url: &str,
+        auth: &str,
+        max_redirects: u32,
+    ) -> Result<(String, String), JmapError> {
         let agent = ureq::AgentBuilder::new()
-            .redirects(0) // Don't auto-follow
+            .redirects(0) // Don't auto-follow, we'll handle manually
             .build();
 
-        let response = agent
-            .get(well_known_url)
-            .call();
+        let mut current_url = url.to_string();
 
-        match response {
-            Ok(_) => Ok(well_known_url.to_string()),
-            Err(ureq::Error::Status(code, resp)) if (300..400).contains(&code) => {
-                if let Some(location) = resp.header("location") {
-                    // Handle relative URLs
-                    if location.starts_with('/') {
-                        // Extract base URL from well_known_url
-                        if let Some(base) = well_known_url.find("/.well-known") {
-                            Ok(format!("{}{}", &well_known_url[..base], location))
+        for i in 0..max_redirects {
+            eprintln!("[JMAP] Request {} to: {}", i + 1, current_url);
+
+            let response = agent
+                .get(&current_url)
+                .set("Authorization", auth)
+                .call();
+
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    eprintln!("[JMAP] Got {} response", status);
+
+                    // Check if this is a redirect (ureq may return 3xx as Ok)
+                    if (300..400).contains(&status) {
+                        if let Some(location) = resp.header("location") {
+                            eprintln!("[JMAP] Following redirect {} -> {}", status, location);
+                            current_url = Self::resolve_redirect(&current_url, location);
+                            continue;
                         } else {
-                            Ok(location.to_string())
+                            return Err(JmapError::Http(format!(
+                                "Redirect {} without Location header",
+                                status
+                            )));
                         }
-                    } else {
-                        Ok(location.to_string())
                     }
-                } else {
-                    Ok(well_known_url.to_string())
+
+                    // Success - return the response body
+                    let body = resp
+                        .into_string()
+                        .map_err(|e| JmapError::Parse(format!("Failed to read response: {}", e)))?;
+
+                    if body.is_empty() {
+                        return Err(JmapError::Http(format!(
+                            "Server returned empty response (status {})",
+                            status
+                        )));
+                    }
+
+                    return Ok((current_url, body));
+                }
+                Err(ureq::Error::Status(code, resp)) if (300..400).contains(&code) => {
+                    // Redirect returned as error - follow it with auth header preserved
+                    if let Some(location) = resp.header("location") {
+                        eprintln!("[JMAP] Following redirect {} -> {}", code, location);
+                        current_url = Self::resolve_redirect(&current_url, location);
+                    } else {
+                        return Err(JmapError::Http(format!(
+                            "Redirect {} without Location header",
+                            code
+                        )));
+                    }
+                }
+                Err(ureq::Error::Status(code, resp)) => {
+                    // HTTP error (4xx, 5xx)
+                    let body = resp.into_string().unwrap_or_default();
+                    eprintln!("[JMAP] HTTP error {}: {}", code, body);
+
+                    if code == 401 {
+                        return Err(JmapError::Http(
+                            "Authentication failed (401 Unauthorized)".to_string(),
+                        ));
+                    }
+
+                    return Err(JmapError::Http(format!(
+                        "HTTP {} error: {}",
+                        code,
+                        if body.is_empty() {
+                            "(empty response)".to_string()
+                        } else {
+                            truncate_str(&body, 200).to_string()
+                        }
+                    )));
+                }
+                Err(e) => {
+                    eprintln!("[JMAP] Connection error: {}", e);
+                    return Err(JmapError::Http(e.to_string()));
                 }
             }
-            Err(e) => Err(JmapError::Http(e.to_string())),
+        }
+
+        Err(JmapError::Http("Too many redirects".to_string()))
+    }
+
+    /// Resolve a redirect location (which may be relative) against a base URL
+    fn resolve_redirect(base_url: &str, location: &str) -> String {
+        if location.starts_with("http://") || location.starts_with("https://") {
+            // Absolute URL
+            location.to_string()
+        } else if location.starts_with('/') {
+            // Absolute path - need to extract scheme + host from base
+            if let Some(idx) = base_url.find("://") {
+                let after_scheme = &base_url[idx + 3..];
+                if let Some(path_start) = after_scheme.find('/') {
+                    let host_part = &base_url[..idx + 3 + path_start];
+                    format!("{}{}", host_part, location)
+                } else {
+                    format!("{}{}", base_url, location)
+                }
+            } else {
+                location.to_string()
+            }
+        } else {
+            // Relative path
+            if let Some(last_slash) = base_url.rfind('/') {
+                format!("{}/{}", &base_url[..last_slash], location)
+            } else {
+                location.to_string()
+            }
         }
     }
 
@@ -75,17 +166,9 @@ impl JmapClient {
     ) -> Result<(JmapSession, Self), JmapError> {
         let auth = Self::auth_header(username, password);
 
-        // First, resolve the well-known URL (may redirect)
-        let session_url = Self::resolve_session_url(well_known_url)?;
-
-        let response = ureq::get(&session_url)
-            .set("Authorization", &auth)
-            .call()
-            .map_err(|e| JmapError::Http(e.to_string()))?;
-
-        let response_text = response
-            .into_string()
-            .map_err(|e| JmapError::Parse(format!("Failed to read response: {}", e)))?;
+        // Fetch the session, following redirects while preserving auth header
+        let (_final_url, response_text) =
+            Self::fetch_with_auth_following_redirects(well_known_url, &auth, 5)?;
 
         let session: JmapSession = serde_json::from_str(&response_text)
             .map_err(|e| JmapError::Parse(format!("Failed to parse session: {}. Response was: {}", e, truncate_str(&response_text, 500))))?;
@@ -93,10 +176,12 @@ impl JmapClient {
         let account_id = session
             .mail_account_id()
             .ok_or_else(|| {
-                let caps: Vec<_> = session.primary_accounts.keys().collect();
+                let primary_caps: Vec<_> = session.primary_accounts.keys().collect();
+                let account_ids: Vec<_> = session.accounts.keys().collect();
                 JmapError::Api(format!(
-                    "No mail account found. Available capabilities: {:?}. Full response: {}",
-                    caps,
+                    "No mail account found. primaryAccounts: {:?}, accounts: {:?}. Full response: {}",
+                    primary_caps,
+                    account_ids,
                     truncate_str(&response_text, 500)
                 ))
             })?

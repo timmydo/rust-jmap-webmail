@@ -7,6 +7,7 @@ use std::collections::HashMap;
 pub struct JmapSession {
     pub username: String,
     pub api_url: String,
+    #[serde(default)]
     pub primary_accounts: HashMap<String, String>,
     #[serde(default)]
     pub accounts: HashMap<String, JmapAccount>,
@@ -24,9 +25,18 @@ pub struct JmapAccount {
 
 impl JmapSession {
     pub fn mail_account_id(&self) -> Option<&str> {
-        self.primary_accounts
-            .get("urn:ietf:params:jmap:mail")
-            .map(|s| s.as_str())
+        // First try the standard primaryAccounts lookup
+        if let Some(id) = self.primary_accounts.get("urn:ietf:params:jmap:mail") {
+            return Some(id.as_str());
+        }
+
+        // Fallback: if there's exactly one account, use that
+        // This handles servers that don't populate primaryAccounts correctly
+        if self.accounts.len() == 1 {
+            return self.accounts.keys().next().map(|s| s.as_str());
+        }
+
+        None
     }
 }
 
