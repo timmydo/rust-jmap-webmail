@@ -112,6 +112,13 @@ fn route(
                 .unwrap_or("");
             handle_emails(state, &session_id, mailbox_id, request)
         }
+        ("GET", p) if p.starts_with("/email/") && p.ends_with("/raw") => {
+            let email_id = p
+                .strip_prefix("/email/")
+                .and_then(|s| s.strip_suffix("/raw"))
+                .unwrap_or("");
+            handle_email_raw(state, &session_id, email_id, request)
+        }
         ("GET", p) if p.starts_with("/email/") => {
             let email_id = p.strip_prefix("/email/").unwrap_or("");
             handle_email(state, &session_id, email_id, request)
@@ -126,6 +133,17 @@ fn html_response(body: String) -> BoxResponse {
     Response::from_data(bytes)
         .with_header(
             Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+        )
+        .with_header(Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap())
+}
+
+fn json_response(body: String) -> BoxResponse {
+    let bytes = body.into_bytes();
+    let len = bytes.len();
+    Response::from_data(bytes)
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
+                .unwrap(),
         )
         .with_header(Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap())
 }
@@ -428,6 +446,47 @@ fn handle_email(
             log_error!("Failed to fetch email {}: {}", email_id_decoded, e);
             let html = templates::error_fragment(&format!("Failed to load email: {}", e));
             request.respond(html_response(html)).map_err(|_| ())
+        }
+    }
+}
+
+fn handle_email_raw(
+    state: &Arc<AppState>,
+    session_id: &Uuid,
+    email_id: &str,
+    request: Request,
+) -> Result<(), ()> {
+    let email_id_decoded = urlencoding_decode(email_id);
+    log_info!(
+        "Fetching raw email: {} (decoded: {})",
+        email_id,
+        email_id_decoded
+    );
+
+    let client = match get_client(state, session_id) {
+        Some(c) => c,
+        None => {
+            log_error!("No client found for session: {}", session_id);
+            return redirect_to_login(request);
+        }
+    };
+
+    match client.get_email_raw(&email_id_decoded) {
+        Ok(Some(json)) => {
+            log_info!("Returning raw email {} ({} bytes)", email_id_decoded, json.len());
+            let response = json_response(json);
+            request.respond(response).map_err(|_| ())
+        }
+        Ok(None) => {
+            log_error!("Raw email not found: {}", email_id_decoded);
+            let response = Response::from_string("Email not found").with_status_code(404);
+            request.respond(response).map_err(|_| ())
+        }
+        Err(e) => {
+            log_error!("Failed to fetch raw email {}: {}", email_id_decoded, e);
+            let response =
+                Response::from_string(format!("Failed to load email: {}", e)).with_status_code(500);
+            request.respond(response).map_err(|_| ())
         }
     }
 }

@@ -430,6 +430,41 @@ impl JmapClient {
         let emails = self.get_emails(&[id.to_string()])?;
         Ok(emails.into_iter().next())
     }
+
+    /// Get raw email data as JSON string (all available properties)
+    pub fn get_email_raw(&self, id: &str) -> Result<Option<String>, JmapError> {
+        log_info!("[JMAP] Fetching raw email: {}", id);
+
+        let request = JmapRequest {
+            using: vec!["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+            method_calls: vec![MethodCall(
+                "Email/get",
+                json!({
+                    "accountId": self.account_id,
+                    "ids": [id],
+                    "properties": null,
+                    "fetchTextBodyValues": true,
+                    "fetchHTMLBodyValues": true,
+                    "fetchAllBodyValues": true
+                }),
+                "0".to_string(),
+            )],
+        };
+
+        let response = self.call(request)?;
+
+        if let Some(method_response) = response.method_responses.first() {
+            if method_response.0 == "Email/get" {
+                // Return the raw JSON of the response
+                let json_str = serde_json::to_string_pretty(&method_response.1)
+                    .map_err(|e| JmapError::Parse(format!("Failed to serialize: {}", e)))?;
+                log_info!("[JMAP] Raw email fetched, {} bytes", json_str.len());
+                return Ok(Some(json_str));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {

@@ -297,7 +297,10 @@ pub fn email_view(email: &Email) -> String {
         .unwrap_or_default();
 
     format!(
-        r#"<dl class="headers">
+        r#"<div style="margin-bottom: 0.5rem;">
+  <a href="/email/{id}/raw" target="_blank" style="font-size: 12px; color: #666; text-decoration: none; border: 1px solid #ccc; padding: 2px 8px; background: #f5f5f5;">[View Raw]</a>
+</div>
+<dl class="headers">
   <dt>From:</dt><dd>{from}</dd>
   <dt>To:</dt><dd>{to}</dd>
   {cc_html}
@@ -306,6 +309,7 @@ pub fn email_view(email: &Email) -> String {
 </dl>
 <hr>
 <pre class="body">{body}</pre>"#,
+        id = html_escape(&email.id),
         from = html_escape(&from),
         to = html_escape(&to),
         cc_html = cc_html,
