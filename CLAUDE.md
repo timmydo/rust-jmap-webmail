@@ -5,7 +5,7 @@ A minimalist webmail client using Rust, htmx, and JMAP.
 ## Build
 
 ```bash
-export CC=/gnu/store/ndnvicqyk3v45iayahf153w5cpf639iw-gcc-toolchain-14.3.0/bin/gcc
+export CC=gcc
 cargo build
 ```
 
