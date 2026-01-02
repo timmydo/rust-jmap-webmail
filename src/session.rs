@@ -7,6 +7,7 @@ pub struct Session {
     pub password: String,
     pub api_url: String,
     pub account_id: String,
+    pub download_url: Option<String>,
 }
 
 pub struct SessionStore {

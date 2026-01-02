@@ -8,6 +8,8 @@ pub struct JmapSession {
     pub username: String,
     pub api_url: String,
     #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
     pub primary_accounts: HashMap<String, String>,
     #[serde(default)]
     pub accounts: HashMap<String, JmapAccount>,

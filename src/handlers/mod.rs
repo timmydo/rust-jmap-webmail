@@ -158,6 +158,16 @@ fn json_response(body: String) -> BoxResponse {
         .with_header(Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap())
 }
 
+fn text_response(body: String) -> BoxResponse {
+    let bytes = body.into_bytes();
+    let len = bytes.len();
+    Response::from_data(bytes)
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..]).unwrap(),
+        )
+        .with_header(Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap())
+}
+
 fn serve_htmx(request: Request) -> Result<(), ()> {
     let htmx_js = include_str!("../../static/htmx.min.js");
     let bytes = htmx_js.as_bytes().to_vec();
@@ -251,6 +261,7 @@ fn handle_login(state: &Arc<AppState>, mut request: Request) -> Result<(), ()> {
                 password,
                 api_url: client.api_url().to_string(),
                 account_id: client.account_id().to_string(),
+                download_url: client.download_url().map(|s| s.to_string()),
             };
 
             let session_id = state.sessions.create(session);
@@ -517,9 +528,9 @@ fn handle_email_raw(
     };
 
     match client.get_email_raw(&email_id_decoded) {
-        Ok(Some(json)) => {
-            log_info!("Returning raw email {} ({} bytes)", email_id_decoded, json.len());
-            let response = json_response(json);
+        Ok(Some(text)) => {
+            log_info!("Returning raw email {} ({} bytes)", email_id_decoded, text.len());
+            let response = text_response(text);
             request.respond(response).map_err(|_| ())
         }
         Ok(None) => {
@@ -543,6 +554,7 @@ fn get_client(state: &Arc<AppState>, session_id: &Uuid) -> Option<JmapClient> {
             s.password.clone(),
             s.api_url.clone(),
             s.account_id.clone(),
+            s.download_url.clone(),
         )
     })
 }

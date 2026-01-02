@@ -337,7 +337,7 @@ pub fn email_view(email: &Email) -> String {
 
     format!(
         r#"<div style="margin-bottom: 0.5rem;">
-  <a href="/email/{id}/raw" target="_blank" style="font-size: 12px; color: #666; text-decoration: none; border: 1px solid #ccc; padding: 2px 8px; background: #f5f5f5;">[View Raw]</a>
+  <a href="/email/{id}/raw" target="_blank" style="font-size: 12px; color: #666; text-decoration: none; border: 1px solid #ccc; padding: 2px 8px; background: #f5f5f5;">View Raw</a>
 </div>
 <dl class="headers">
   <dt>From:</dt><dd>{from}</dd>

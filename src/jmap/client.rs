@@ -9,6 +9,7 @@ pub struct JmapClient {
     password: String,
     api_url: String,
     account_id: String,
+    download_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -203,12 +204,14 @@ impl JmapClient {
             .to_string();
 
         log_info!("[JMAP] Discovery successful, account_id: {}", account_id);
+        log_debug!("[JMAP] download_url: {:?}", session.download_url);
 
         let client = JmapClient {
             username: username.to_string(),
             password: password.to_string(),
             api_url: session.api_url.clone(),
             account_id,
+            download_url: session.download_url.clone(),
         };
 
         Ok((session, client))
@@ -219,12 +222,14 @@ impl JmapClient {
         password: String,
         api_url: String,
         account_id: String,
+        download_url: Option<String>,
     ) -> Self {
         JmapClient {
             username,
             password,
             api_url,
             account_id,
+            download_url,
         }
     }
 
@@ -234,6 +239,10 @@ impl JmapClient {
 
     pub fn api_url(&self) -> &str {
         &self.api_url
+    }
+
+    pub fn download_url(&self) -> Option<&str> {
+        self.download_url.as_deref()
     }
 
     fn call(&self, request: JmapRequest) -> Result<JmapResponse, JmapError> {
@@ -438,10 +447,11 @@ impl JmapClient {
         Ok(emails.into_iter().next())
     }
 
-    /// Get raw email data as JSON string (all available properties)
+    /// Get raw email source (RFC 5322) via blob download
     pub fn get_email_raw(&self, id: &str) -> Result<Option<String>, JmapError> {
-        log_info!("[JMAP] Fetching raw email: {}", id);
+        log_info!("[JMAP] Fetching raw email via blob: {}", id);
 
+        // First, get the blobId for this email
         let request = JmapRequest {
             using: vec!["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
             method_calls: vec![MethodCall(
@@ -449,10 +459,7 @@ impl JmapClient {
                 json!({
                     "accountId": self.account_id,
                     "ids": [id],
-                    "properties": null,
-                    "fetchTextBodyValues": true,
-                    "fetchHTMLBodyValues": true,
-                    "fetchAllBodyValues": true
+                    "properties": ["id", "blobId"]
                 }),
                 "0".to_string(),
             )],
@@ -460,17 +467,54 @@ impl JmapClient {
 
         let response = self.call(request)?;
 
-        if let Some(method_response) = response.method_responses.first() {
+        let blob_id = if let Some(method_response) = response.method_responses.first() {
             if method_response.0 == "Email/get" {
-                // Return the raw JSON of the response
-                let json_str = serde_json::to_string_pretty(&method_response.1)
-                    .map_err(|e| JmapError::Parse(format!("Failed to serialize: {}", e)))?;
-                log_info!("[JMAP] Raw email fetched, {} bytes", json_str.len());
-                return Ok(Some(json_str));
+                method_response.1["list"]
+                    .as_array()
+                    .and_then(|list| list.first())
+                    .and_then(|email| email["blobId"].as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        Ok(None)
+        let blob_id = match blob_id {
+            Some(id) => id,
+            None => {
+                log_error!("[JMAP] No blobId found for email: {}", id);
+                return Ok(None);
+            }
+        };
+
+        log_debug!("[JMAP] Got blobId: {}", blob_id);
+
+        // Now download the blob
+        let download_url = match &self.download_url {
+            Some(url) => url,
+            None => {
+                log_error!("[JMAP] No download URL available");
+                return Err(JmapError::Api("No download URL available".to_string()));
+            }
+        };
+
+        // JMAP download URL is a template like:
+        // https://server/download/{accountId}/{blobId}/{name}?accept={type}
+        let url = download_url
+            .replace("{accountId}", &self.account_id)
+            .replace("{blobId}", &blob_id)
+            .replace("{name}", "email.eml")
+            .replace("{type}", "message/rfc822");
+
+        log_debug!("[JMAP] Downloading blob from: {}", url);
+
+        let auth = Self::auth_header(&self.username, &self.password);
+        let (_, body) = Self::fetch_with_auth_following_redirects(&url, &auth, 5)?;
+
+        log_info!("[JMAP] Raw email downloaded, {} bytes", body.len());
+        Ok(Some(body))
     }
 }
 
