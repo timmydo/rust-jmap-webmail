@@ -64,6 +64,7 @@ pub fn base_page(title: &str, body: &str) -> String {
     .email-list th {{ background: #f0f0f0; position: sticky; top: 0; }}
     .email-list tr {{ cursor: pointer; }}
     .email-list tr:hover {{ background: #f5f5f5; }}
+    .email-list tr.selected {{ background: #e0e8f0; }}
     .email-list tr.unread {{ font-weight: bold; }}
     .email-list .subject {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .email-list .preview {{ color: #666; font-size: 12px; }}
@@ -130,6 +131,26 @@ pub fn base_page(title: &str, body: &str) -> String {
 </head>
 <body>
 {body}
+<script>
+document.addEventListener('click', function(e) {{
+  // Handle mailbox selection
+  var mailboxItem = e.target.closest('.sidebar li');
+  if (mailboxItem) {{
+    document.querySelectorAll('.sidebar li.selected').forEach(function(el) {{
+      el.classList.remove('selected');
+    }});
+    mailboxItem.classList.add('selected');
+  }}
+  // Handle email row selection
+  var emailRow = e.target.closest('.email-list tbody tr');
+  if (emailRow && !emailRow.id) {{
+    document.querySelectorAll('.email-list tr.selected').forEach(function(el) {{
+      el.classList.remove('selected');
+    }});
+    emailRow.classList.add('selected');
+  }}
+}});
+</script>
 </body>
 </html>"#,
         title = html_escape(title),
