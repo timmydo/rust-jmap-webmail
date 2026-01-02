@@ -252,9 +252,9 @@ fn email_rows(emails: &[Email], mailbox_id: &str, next_offset: Option<u32>) -> S
 
             format!(
                 "<tr{unread_class} hx-get=\"/email/{id}\" hx-target=\"#email-view\" hx-swap=\"innerHTML\">
+  <td style=\"white-space: nowrap\">{date}</td>
   <td>{from}</td>
   <td><span class=\"subject\">{subject}</span><br><span class=\"preview\">{preview}</span></td>
-  <td>{date}</td>
 </tr>",
                 id = html_escape(&e.id),
                 from = html_escape(&from),
@@ -293,7 +293,7 @@ pub fn email_list(emails: &[Email], mailbox_id: &str, next_offset: Option<u32>) 
 
     format!(
         r#"<table>
-<thead><tr><th>From</th><th>Subject</th><th>Date</th></tr></thead>
+<thead><tr><th>Date</th><th>From</th><th>Subject</th></tr></thead>
 <tbody>{}</tbody>
 </table>"#,
         rows
