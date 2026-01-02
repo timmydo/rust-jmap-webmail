@@ -16,8 +16,28 @@ pub fn base_page(title: &str, body: &str) -> String {
     .sidebar {{
       width: 200px;
       border-right: 1px solid #ccc;
-      overflow-y: auto;
       background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+    }}
+    .sidebar-header {{
+      padding: 0.5rem;
+      border-bottom: 1px solid #ccc;
+      background: #f0f0f0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }}
+    .sidebar-header .username {{
+      font-size: 12px;
+      color: #333;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .mailbox-list {{
+      flex: 1;
+      overflow-y: scroll;
       padding: 0.5rem 0;
     }}
     .sidebar ul {{ list-style: none; margin: 0; padding: 0; }}
@@ -32,7 +52,7 @@ pub fn base_page(title: &str, body: &str) -> String {
     .main {{ flex: 1; display: flex; flex-direction: column; overflow: hidden; }}
     .email-list {{
       height: 40%;
-      overflow-y: auto;
+      overflow-y: scroll;
       border-bottom: 1px solid #ccc;
     }}
     .email-list table {{ width: 100%; border-collapse: collapse; }}
@@ -49,7 +69,7 @@ pub fn base_page(title: &str, body: &str) -> String {
     .email-list .preview {{ color: #666; font-size: 12px; }}
     .email-view {{
       flex: 1;
-      overflow-y: auto;
+      overflow-y: scroll;
       padding: 1rem;
     }}
     .email-view .headers {{ margin-bottom: 1rem; }}
@@ -97,22 +117,15 @@ pub fn base_page(title: &str, body: &str) -> String {
     .error {{ color: #c00; margin-top: 1rem; }}
     .loading {{ color: #666; font-style: italic; }}
     .logout-btn {{
-      padding: 0.5rem 1rem;
+      padding: 0.25rem 0.5rem;
       background: none;
-      border: none;
+      border: 1px solid #ccc;
       cursor: pointer;
       color: #666;
       font-family: monospace;
+      font-size: 11px;
     }}
     .logout-btn:hover {{ color: #000; }}
-    .header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.5rem 1rem;
-      border-bottom: 1px solid #ccc;
-      background: #f0f0f0;
-    }}
   </style>
 </head>
 <body>
@@ -146,13 +159,15 @@ pub fn login_page(error: Option<&str>) -> String {
 
 pub fn main_page(username: &str) -> String {
     let body = format!(
-        r#"<div class="header">
-  <span>Logged in as: {username}</span>
-  <button class="logout-btn" hx-post="/logout" hx-target="body" hx-swap="innerHTML">Logout</button>
-</div>
-<div class="container">
-  <div class="sidebar" hx-get="/mailboxes" hx-trigger="load">
-    <div class="loading">Loading mailboxes...</div>
+        r#"<div class="container">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="username">{username}</span>
+      <button class="logout-btn" hx-post="/logout" hx-target="body" hx-swap="innerHTML">Logout</button>
+    </div>
+    <div class="mailbox-list" hx-get="/mailboxes" hx-trigger="load">
+      <div class="loading">Loading mailboxes...</div>
+    </div>
   </div>
   <div class="main">
     <div class="email-list" id="email-list">
