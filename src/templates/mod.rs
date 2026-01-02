@@ -219,12 +219,7 @@ pub fn mailbox_list(mailboxes: &[Mailbox]) -> String {
     format!("<ul>{}</ul>", items)
 }
 
-pub fn email_list(emails: &[Email]) -> String {
-    if emails.is_empty() {
-        return r#"<div style="padding: 1rem; color: #666;">No emails in this mailbox</div>"#
-            .to_string();
-    }
-
+fn email_rows(emails: &[Email], mailbox_id: &str, next_offset: Option<u32>) -> String {
     let rows: String = emails
         .iter()
         .map(|e| {
@@ -271,6 +266,31 @@ pub fn email_list(emails: &[Email]) -> String {
         })
         .collect();
 
+    let load_more = if let Some(offset) = next_offset {
+        format!(
+            "<tr id=\"loadmore\">\n\
+  <td colspan=\"3\" style=\"text-align: center; padding: 1rem;\">\n\
+    <button hx-get=\"/mailbox/{mailbox_id}/emails?offset={offset}\" hx-target=\"#loadmore\" hx-swap=\"outerHTML\" style=\"padding: 0.5rem 1rem; cursor: pointer; font-family: monospace; background: #f0f0f0; border: 1px solid #ccc;\">Load More</button>\n\
+  </td>\n\
+</tr>",
+            mailbox_id = html_escape(mailbox_id),
+            offset = offset
+        )
+    } else {
+        String::new()
+    };
+
+    format!("{}{}", rows, load_more)
+}
+
+pub fn email_list(emails: &[Email], mailbox_id: &str, next_offset: Option<u32>) -> String {
+    if emails.is_empty() {
+        return r#"<div style="padding: 1rem; color: #666;">No emails in this mailbox</div>"#
+            .to_string();
+    }
+
+    let rows = email_rows(emails, mailbox_id, next_offset);
+
     format!(
         r#"<table>
 <thead><tr><th>From</th><th>Subject</th><th>Date</th></tr></thead>
@@ -278,6 +298,10 @@ pub fn email_list(emails: &[Email]) -> String {
 </table>"#,
         rows
     )
+}
+
+pub fn email_list_rows(emails: &[Email], mailbox_id: &str, next_offset: Option<u32>) -> String {
+    email_rows(emails, mailbox_id, next_offset)
 }
 
 pub fn email_view(email: &Email) -> String {

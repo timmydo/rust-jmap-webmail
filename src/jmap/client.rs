@@ -311,11 +311,13 @@ impl JmapClient {
         &self,
         mailbox_id: &str,
         limit: u32,
-    ) -> Result<Vec<String>, JmapError> {
+        position: u32,
+    ) -> Result<EmailQueryResult, JmapError> {
         log_info!(
-            "[JMAP] Email/query for mailbox: {} (limit: {})",
+            "[JMAP] Email/query for mailbox: {} (limit: {}, position: {})",
             mailbox_id,
-            limit
+            limit,
+            position
         );
 
         let request = JmapRequest {
@@ -326,7 +328,8 @@ impl JmapClient {
                     "accountId": self.account_id,
                     "filter": { "inMailbox": mailbox_id },
                     "sort": [{ "property": "receivedAt", "isAscending": false }],
-                    "limit": limit
+                    "limit": limit,
+                    "position": position
                 }),
                 "0".to_string(),
             )],
@@ -348,7 +351,11 @@ impl JmapClient {
                 if !query_response.ids.is_empty() {
                     log_debug!("[JMAP] Email IDs: {:?}", query_response.ids);
                 }
-                return Ok(query_response.ids);
+                return Ok(EmailQueryResult {
+                    ids: query_response.ids,
+                    total: query_response.total,
+                    position: query_response.position,
+                });
             } else {
                 log_warn!("[JMAP] Unexpected method response: {}", method_response.0);
             }

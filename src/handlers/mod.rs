@@ -105,12 +105,22 @@ fn route(
         ("GET", "/") => serve_main_page(state, &session_id, request),
         ("POST", "/logout") => handle_logout(state, &session_id, request),
         ("GET", "/mailboxes") => handle_mailboxes(state, &session_id, request),
-        ("GET", p) if p.starts_with("/mailbox/") && p.ends_with("/emails") => {
-            let mailbox_id = p
+        ("GET", p) if p.starts_with("/mailbox/") && (p.contains("/emails?") || p.ends_with("/emails")) => {
+            // Parse path and query string
+            let (path_part, query_string) = if let Some(idx) = p.find('?') {
+                (&p[..idx], Some(&p[idx + 1..]))
+            } else {
+                (p, None)
+            };
+            let mailbox_id = path_part
                 .strip_prefix("/mailbox/")
                 .and_then(|s| s.strip_suffix("/emails"))
                 .unwrap_or("");
-            handle_emails(state, &session_id, mailbox_id, request)
+            let offset = query_string
+                .and_then(|qs| parse_query_param(qs, "offset"))
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0);
+            handle_emails(state, &session_id, mailbox_id, offset, request)
         }
         ("GET", p) if p.starts_with("/email/") && p.ends_with("/raw") => {
             let email_id = p
@@ -320,17 +330,21 @@ fn handle_mailboxes(state: &Arc<AppState>, session_id: &Uuid, request: Request) 
     }
 }
 
+const EMAILS_PER_PAGE: u32 = 50;
+
 fn handle_emails(
     state: &Arc<AppState>,
     session_id: &Uuid,
     mailbox_id: &str,
+    offset: u32,
     request: Request,
 ) -> Result<(), ()> {
     let mailbox_id_decoded = urlencoding_decode(mailbox_id);
     log_info!(
-        "Fetching emails for mailbox: {} (decoded: {})",
+        "Fetching emails for mailbox: {} (decoded: {}, offset: {})",
         mailbox_id,
-        mailbox_id_decoded
+        mailbox_id_decoded,
+        offset
     );
 
     let client = match get_client(state, session_id) {
@@ -343,52 +357,75 @@ fn handle_emails(
 
     log_debug!("Querying email IDs for mailbox: {}", mailbox_id_decoded);
 
-    match client.query_emails(&mailbox_id_decoded, 50) {
-        Ok(ids) => {
+    match client.query_emails(&mailbox_id_decoded, EMAILS_PER_PAGE, offset) {
+        Ok(query_result) => {
             log_info!(
-                "Email/query returned {} email IDs for mailbox {}",
-                ids.len(),
-                mailbox_id_decoded
+                "Email/query returned {} email IDs for mailbox {} (total: {:?})",
+                query_result.ids.len(),
+                mailbox_id_decoded,
+                query_result.total
             );
 
-            if ids.is_empty() {
+            if query_result.ids.is_empty() {
                 log_debug!("No emails in mailbox, returning empty list");
-                let html = templates::email_list(&[]);
+                let html = templates::email_list(&[], mailbox_id, None);
                 return request.respond(html_response(html)).map_err(|_| ());
             }
 
-            log_debug!("Email IDs returned: {:?}", ids);
-            log_debug!("Fetching email details for {} emails...", ids.len());
+            log_debug!("Email IDs returned: {:?}", query_result.ids);
+            log_debug!("Fetching email details for {} emails...", query_result.ids.len());
 
-            match client.get_emails(&ids) {
+            match client.get_emails(&query_result.ids) {
                 Ok(emails) => {
                     log_info!(
                         "Email/get returned {} emails (requested {})",
                         emails.len(),
-                        ids.len()
+                        query_result.ids.len()
                     );
 
-                    if emails.len() != ids.len() {
+                    if emails.len() != query_result.ids.len() {
                         log_error!(
                             "MISMATCH: Requested {} email IDs but got {} emails back!",
-                            ids.len(),
+                            query_result.ids.len(),
                             emails.len()
                         );
-                        log_debug!("Requested IDs: {:?}", ids);
+                        log_debug!("Requested IDs: {:?}", query_result.ids);
                         let returned_ids: Vec<_> = emails.iter().map(|e| &e.id).collect();
                         log_debug!("Returned IDs: {:?}", returned_ids);
 
                         // Find missing IDs
                         let returned_set: std::collections::HashSet<_> =
                             emails.iter().map(|e| e.id.as_str()).collect();
-                        let missing: Vec<_> = ids
+                        let missing: Vec<_> = query_result.ids
                             .iter()
                             .filter(|id| !returned_set.contains(id.as_str()))
                             .collect();
                         log_error!("Missing email IDs: {:?}", missing);
                     }
 
-                    let html = templates::email_list(&emails);
+                    // Calculate pagination info
+                    let next_offset = if let Some(total) = query_result.total {
+                        let next = offset + emails.len() as u32;
+                        if next < total {
+                            Some(next)
+                        } else {
+                            None
+                        }
+                    } else {
+                        // If total is unknown but we got a full page, assume there might be more
+                        if emails.len() as u32 == EMAILS_PER_PAGE {
+                            Some(offset + EMAILS_PER_PAGE)
+                        } else {
+                            None
+                        }
+                    };
+
+                    // Use rows-only template for pagination (offset > 0)
+                    let html = if offset > 0 {
+                        templates::email_list_rows(&emails, mailbox_id, next_offset)
+                    } else {
+                        templates::email_list(&emails, mailbox_id, next_offset)
+                    };
                     request.respond(html_response(html)).map_err(|_| ())
                 }
                 Err(e) => {
@@ -523,4 +560,16 @@ fn urlencoding_decode(s: &str) -> String {
     }
 
     result
+}
+
+fn parse_query_param<'a>(query_string: &'a str, key: &str) -> Option<&'a str> {
+    for pair in query_string.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+            if k == key {
+                return Some(v);
+            }
+        }
+    }
+    None
 }

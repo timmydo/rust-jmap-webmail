@@ -103,6 +103,13 @@ pub struct EmailQueryResponse {
     pub total: Option<u32>,
 }
 
+#[derive(Debug)]
+pub struct EmailQueryResult {
+    pub ids: Vec<String>,
+    pub total: Option<u32>,
+    pub position: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Email {
