@@ -403,6 +403,14 @@ fn handle_emails(
                         log_error!("Missing email IDs: {:?}", missing);
                     }
 
+                    // Sort emails by receivedAt descending (newest first)
+                    let mut emails = emails;
+                    emails.sort_by(|a, b| {
+                        let a_date = a.received_at.as_deref().unwrap_or("");
+                        let b_date = b.received_at.as_deref().unwrap_or("");
+                        b_date.cmp(a_date) // Reverse order for newest first
+                    });
+
                     // Calculate pagination info
                     let next_offset = if let Some(total) = query_result.total {
                         let next = offset + emails.len() as u32;
